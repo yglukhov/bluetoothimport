@@ -163,10 +163,17 @@ proc hexMacAddrToCanonical(s: string): string =
     result &= c
   toUpperAscii(result)
 
+proc getConfigSectionValueAsString(regdata, section, key: string): string =
+  result = getConfigSectionValue(regdata, section, key)
+  if result.len > 0:
+    result = result.configStringToHex().parseHexStr()
+    if result.endsWith('\0'): result.setLen(result.len - 1)
+
 proc main() =
   if findExe("hivexregedit").len == 0:
     echo "hivexregedit not found. Install it to use this tool."
 
+  var importHappened = false
   var btregdata = ""
   for v in getNtfsVolumes():
     withMountedDevice(v):
@@ -177,14 +184,15 @@ proc main() =
     echo "Could not find windows registry"
   else:
     var linuxDevices = getLinuxDevices()
-    # echo "L: ", linuxDevices
     let keysRootKey = getConfigSubsections(btregdata, "\\ControlSet001\\Services\\BTHPORT\\Parameters\\Keys")[0]
     # echo btregdata
     for s in getConfigSubsections(btregdata, "\\ControlSet001\\Services\\BTHPORT\\Parameters\\Devices"):
-      var n = getConfigSectionValue(btregdata, s, "LEName")
+      var n = getConfigSectionValueAsString(btregdata, s, "LEName")
+      var simpleMode = false
+      if n.len == 0:
+        simpleMode = true
+        n = getConfigSectionValueAsString(btregdata, s, "Name")
       if n.len != 0:
-        n = n.configStringToHex().parseHexStr()
-        if n.endsWith('\0'): n.setLen(n.len - 1)
         if n in linuxDevices:
           if prompt("Import " & n & "? (Y/N): "):
             let btRoot = "/var/lib/bluetooth/" & sudoLs("/var/lib/bluetooth")[0]
@@ -192,22 +200,28 @@ proc main() =
               if ls.find(":") != -1:
                 var f = execCmdEx("sudo cat " & btRoot & "/" & ls & "/info")[0]
                 let name = getIniSectionValue(f, "General", "Name")
-                echo "name: ", name
                 if name == n:
                   let k = s.lastPathComponent
                   let nk = hexMacAddrToCanonical(k)
 
-                  discard patchIniSectionValue(f, "LongTermKey", "Key", getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "LTK").configStringToHex())
-                  discard patchIniSectionValue(f, "LongTermKey", "EncSize", $getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "KeyLength").configStringToInt())
-                  discard patchIniSectionValue(f, "LongTermKey", "Rand", $getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "ERand").configStringToHex().erandToDecimal())
-                  discard patchIniSectionValue(f, "LongTermKey", "EDiv", $getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "EDIV").configStringToInt())
-                  discard patchIniSectionValue(f, "LocalSignatureKey", "Key", getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "CSRK"))
-                  discard patchIniSectionValue(f, "IdentityResolvingKey", "Key", getConfigSectionValue(btregdata, keysRootKey & "\\" & k, "IRK").configStringToHexReversed())
+                  if simpleMode:
+                    discard patchIniSectionValue(f, "LinkKey", "Key", getConfigSectionValue(btregdata, keysRootKey, k).configStringToHex())
+                  else:
+                    let ks = keysRootKey & "\\" & k
+                    discard patchIniSectionValue(f, "LongTermKey", "Key", getConfigSectionValue(btregdata, ks, "LTK").configStringToHex())
+                    discard patchIniSectionValue(f, "LongTermKey", "EncSize", $getConfigSectionValue(btregdata, ks, "KeyLength").configStringToInt())
+                    discard patchIniSectionValue(f, "LongTermKey", "Rand", $getConfigSectionValue(btregdata, ks, "ERand").configStringToHex().erandToDecimal())
+                    discard patchIniSectionValue(f, "LongTermKey", "EDiv", $getConfigSectionValue(btregdata, ks, "EDIV").configStringToInt())
+                    discard patchIniSectionValue(f, "LocalSignatureKey", "Key", getConfigSectionValue(btregdata, ks, "CSRK"))
+                    discard patchIniSectionValue(f, "IdentityResolvingKey", "Key", getConfigSectionValue(btregdata, ks, "IRK").configStringToHexReversed())
                   echo "mv ", btRoot & "/" & ls, " -> ", btRoot & "/" & nk
                   if ls != nk:
                     sudoMv(btRoot & "/" & ls, btRoot & "/" & nk)
                   sudoWriteFile(btRoot & "/" & nk & "/info", f)
+                  importHappened = true
                   # echo f
                   break
+  if importHappened:
+    echo "run: systemctl restart bluetooth"
 
 main()
