@@ -193,16 +193,16 @@ proc main() =
       if n.len == 0:
         simpleMode = true
         n = getConfigSectionValueAsString(btregdata, s, "Name")
-      if n.len != 0 and n in linuxDevices and prompt("Import " & n & "? (Y/N): "):
+      let k = s.lastPathComponent
+      let keyExists = getConfigSectionValue(btregdata, keysRootKey, k) != ""
+      if n.len != 0 and n in linuxDevices and (keyExists or not simpleMode) and prompt("Import " & n & "? (Y/N): "):
         let btRoot = "/var/lib/bluetooth/" & sudoLs("/var/lib/bluetooth")[0]
         for ls in sudoLs(btRoot):
           if ls.find(":") != -1:
             var f = execCmdEx("sudo cat " & btRoot & "/" & ls & "/info")[0]
             let name = getIniSectionValue(f, "General", "Name")
             if name == n:
-              let k = s.lastPathComponent
               let nk = hexMacAddrToCanonical(k)
-
               if simpleMode:
                 discard patchIniSectionValue(f, "LinkKey", "Key", getConfigSectionValue(btregdata, keysRootKey, k).configStringToHex())
               else:
